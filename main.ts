@@ -273,6 +273,17 @@ function entropyBits(row) {
   }
   return total * LOG2[total] - s;
 }
+const PAIR_SEEN = new Uint32Array(65536);
+let PAIR_STAMP = 0;
+function pairsCost(row) {
+  const stamp = ++PAIR_STAMP;
+  let n = 0;
+  for (let i = 1; i < row.length; i++) {
+    const pair = (row[i - 1] << 8) | row[i];
+    if (PAIR_SEEN[pair] !== stamp) { PAIR_SEEN[pair] = stamp; n++; }
+  }
+  return n;
+}
 function filterImage(samples, bpp, mode) {
   const stride = W * bpp;
   const raw = new Uint8Array(H * (stride + 1));
@@ -286,8 +297,8 @@ function filterImage(samples, bpp, mode) {
     const cur = samples.subarray(y * stride, (y + 1) * stride);
     const prev = y === 0 ? null : samples.subarray((y - 1) * stride, y * stride);
     const at = y * (stride + 1);
-    if (mode === 'none' || mode === 'paeth') {
-      const f = mode === 'none' ? 0 : 4;
+    if (mode === 'none' || mode === 'paeth' || mode === 'sub') {
+      const f = mode === 'none' ? 0 : mode === 'paeth' ? 4 : 1;
       raw[at] = f;
       filterRowInto(f, cur, prev, bpp, raw.subarray(at + 1, at + 1 + stride));
       continue;
@@ -300,6 +311,7 @@ function filterImage(samples, bpp, mode) {
       let cost;
       if (mode === 'minsum') cost = s;
       else if (mode === 'entropy') cost = entropyBits(trial[t].subarray(1));
+      else if (mode === 'pairs') cost = pairsCost(trial[t].subarray(1));
       else cost = deflateSync(trial[t], { level: 4, memLevel: 9, dictionary: before }).length;
       if (cost < best) { best = cost; type = t; }
     }
@@ -423,7 +435,6 @@ function channelForm(rgba, grey, opaque) {
 }
 
 // ---- Encode one image: try the forms, keep the smallest real deflate --------
-const Z = { level: 9, memLevel: 9 };
 function encodeImage(rgba) {
   const { opaque, grey, colours } = analyse(rgba);
   const forms = [];
@@ -443,12 +454,12 @@ function encodeImage(rgba) {
     // unfiltered often wins on screenshots because it keeps repeated bytes
     // matchable, brute force wins where filters genuinely help.
     const modes = form.ct === 3
-      ? ['none', 'minsum', 'entropy', 'brute']
-      : ['none', 'minsum', 'entropy', 'paeth', 'brute'];
+      ? ['none', 'sub', 'minsum', 'entropy', 'pairs', 'brute']
+      : ['none', 'minsum', 'entropy', 'pairs', 'paeth', 'brute'];
     let formBest = null;
     for (const mode of modes) {
       const raw = filterImage(form.samples, form.bpp, mode);
-      const z = deflateSync(raw, Z);
+      const z = deflateSync(raw, { level: 9, memLevel: 9 });
       const bytes = z.length + overhead;
       if (formBest === null || bytes < formBest.bytes) formBest = { form, raw, zlib: z, bytes };
     }
